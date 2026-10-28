@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "h1st0ry3d",
   "license": "MIT",
-  "description": "Track days since several events, with one counter pinned to the bar. Reads and writes ~/.config/odaysy/config.json.",
+  "description": "Track days since several events, with one counter pinned to the bar. Backup, restore and open the config folder from the bar menu.",
   "kinds": [
     "bar-widget",
     "panel"
@@ -16,7 +16,7 @@
   },
   "barWidget": {
     "displayName": "Odaysy",
-    "description": "Days since the things you are counting, with one number in the bar.",
+    "description": "Days since the things you are counting, with one number in the bar and backup, restore and location in the right-click menu.",
     "category": "Time",
     "aliases": [
       "days",

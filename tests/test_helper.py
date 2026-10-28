@@ -22,10 +22,10 @@ class HelperTest(unittest.TestCase):
             "PATH": "/usr/bin:/bin",
         }
 
-    def run_helper(self, *arguments, expected=0):
+    def run_helper(self, *arguments, expected=0, stdin=None):
         result = subprocess.run(
             [sys.executable, "-I", "-B", str(HELPER), *arguments],
-            env=self.environment, capture_output=True, text=True)
+            env=self.environment, capture_output=True, text=True, input=stdin)
         self.assertEqual(result.returncode, expected, result.stderr)
         return result
 
@@ -119,6 +119,59 @@ class HelperTest(unittest.TestCase):
         }))
         self.run_helper("list", expected=1)
         self.run_helper("rename", "--", "../../etc/passwd", "B", expected=1)
+
+
+    def test_backup_and_restore_round_trip(self):
+        self.add("Workout")
+        self.add("Last drink")
+        exported = self.config_home / "my backup.json"
+        result = self.run_helper(
+            "backup", "export", stdin='{"path": "%s"}\n' % exported)
+        self.assertIn("Wrote", json.loads(result.stdout)["message"])
+        self.assertTrue(exported.is_file())
+
+        self.add("Temporary")
+        self.assertEqual(len(self.state()["events"]), 3)
+
+        result = self.run_helper(
+            "backup", "restore", stdin='{"path": "%s"}\n' % exported)
+        self.assertIn("Restored 2 events", json.loads(result.stdout)["message"])
+        self.assertEqual([entry["title"] for entry in self.state()["events"]],
+                         ["Workout", "Last drink"])
+        backups = list((self.config_home / "odaysy" / "backups").iterdir())
+        self.assertEqual(len(backups), 1)
+        self.assertTrue(backups[0].name.startswith("pre-restore_"))
+
+    def test_restore_refuses_a_foreign_or_empty_backup(self):
+        self.add("Workout")
+        before = self.state()
+        empty = self.config_home / "empty.json"
+        empty.write_text('{"version": 1, "pinnedId": "", "events": []}\n')
+        self.run_helper(
+            "backup", "restore", stdin='{"path": "%s"}\n' % empty, expected=1)
+        self.assertEqual(self.state()["events"], before["events"])
+
+        junk = self.config_home / "junk.json"
+        junk.write_text("not json\n")
+        self.run_helper(
+            "backup", "restore", stdin='{"path": "%s"}\n' % junk, expected=1)
+        self.assertEqual(self.state()["events"], before["events"])
+
+    def test_backup_request_refuses_traversal(self):
+        self.add("Workout")
+        self.run_helper(
+            "backup", "export",
+            stdin='{"path": "/tmp/../etc/odaysy-backup.json"}\n', expected=1)
+
+    def test_backup_follows_a_relative_directory_link(self):
+        self.add("Workout")
+        real = self.config_home / "real"
+        real.mkdir()
+        (self.config_home / "link").symlink_to("real")
+        target = self.config_home / "link" / "backup.json"
+        self.run_helper(
+            "backup", "export", stdin='{"path": "%s"}\n' % target)
+        self.assertTrue((real / "backup.json").is_file())
 
 
 if __name__ == "__main__":

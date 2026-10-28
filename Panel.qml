@@ -49,6 +49,13 @@ Panel {
     }
     readonly property int outputLimit: Model.MAX_EVENTS * 2048 + 4096
     readonly property int errorLimit: 4096
+    readonly property string configDir: {
+        var base = Quickshell.env("XDG_CONFIG_HOME") || ""
+        if (base === "") base = root.homeDir + "/.config"
+        if (base.length > 1 && base.charAt(base.length - 1) === "/")
+            base = base.substring(0, base.length - 1)
+        return base + "/odaysy"
+    }
 
     // ---- the document -------------------------------------------------------
     readonly property var emptyStore: ({ version: 1, pinnedId: "", events: [] })
@@ -80,10 +87,14 @@ Panel {
     property string confirmId: ""
     property string confirmMessage: ""
     property string confirmActionText: "Confirm"
+    property string restorePath: ""
+    property string queuedFileVerb: ""
+    property string queuedFilePath: ""
+    property string fileNotice: ""
     property double nowMs: Date.now()
 
     // ---- helper calls -------------------------------------------------------
-    function callHelper(action, argumentsList) {
+    function callHelper(action, argumentsList, stdinLine) {
         if (helper.running) return
         root.busy = true
         root.errorText = ""
@@ -91,9 +102,63 @@ Panel {
         helper.timedOut = false
         helper.stdoutBuffer = ""
         helper.stderrBuffer = ""
+        helper.stdinPayload = stdinLine || ""
+        helper.stdinEnabled = helper.stdinPayload !== ""
         helper.command = [root.python, "-I", "-B", root.helperPath].concat(argumentsList)
         helper.running = true
+        helperTimeout.interval = (action === "export" || action === "restore") ? 30000 : 5000
         helperTimeout.restart()
+    }
+
+    function fileName(path) {
+        var text = String(path === undefined || path === null ? "" : path)
+        var slash = text.lastIndexOf("/")
+        return slash >= 0 ? text.substring(slash + 1) : text
+    }
+
+    function reportFileOp(message) {
+        root.fileNotice = Model.plain(message, 300)
+        fileNoticeClear.restart()
+    }
+
+    function clearFileNotice() {
+        fileNoticeClear.stop()
+        root.fileNotice = ""
+    }
+
+    function runFileOp(verb, path) {
+        if (helper.running) {
+            root.queuedFileVerb = verb
+            root.queuedFilePath = path
+            return
+        }
+        root.callHelper(verb, ["backup", verb], JSON.stringify({ path: path }))
+    }
+
+    function startQueuedFileOp() {
+        if (helper.running || root.queuedFileVerb === "") return
+        var verb = root.queuedFileVerb
+        var path = root.queuedFilePath
+        root.queuedFileVerb = ""
+        root.queuedFilePath = ""
+        root.callHelper(verb, ["backup", verb], JSON.stringify({ path: path }))
+    }
+
+    function requestRestore(path) {
+        if (!path) return
+        backupMenu.opened = false
+        root.clearFileNotice()
+        root.restorePath = String(path)
+        root.confirmKind = "restore"
+        root.confirmId = ""
+        root.confirmMessage = "Replace your events with \"" + Model.plain(root.fileName(path), 80)
+            + "\"?\n\nThe current list is copied into backups/ first."
+        root.confirmActionText = "Restore"
+        confirm.selectedIndex = 0
+        root.focusedField = null
+        confirm.opened = true
+        if (!root.opened) root.open()
+        keyCatcher.forceActiveFocus()
     }
 
     function reload() {
@@ -163,14 +228,17 @@ Panel {
         confirm.opened = false
         root.confirmKind = ""
         root.confirmId = ""
+        root.restorePath = ""
     }
 
     function acceptConfirm() {
         var kind = root.confirmKind
         var identifier = root.confirmId
+        var path = root.restorePath
         root.closeConfirm()
         if (kind === "reset") root.callHelper("reset", ["reset", "--", identifier])
         else if (kind === "remove") root.callHelper("remove", ["remove", "--", identifier])
+        else if (kind === "restore" && path !== "") root.runFileOp("restore", path)
     }
 
     Process {
@@ -179,10 +247,20 @@ Panel {
         property bool timedOut: false
         property string stdoutBuffer: ""
         property string stderrBuffer: ""
+        property string stdinPayload: ""
 
         environment: root.helperEnvironment
         clearEnvironment: true
         command: [root.python, "-I", "-B", root.helperPath, "list"]
+        stdinEnabled: false
+
+        onStarted: {
+            if (helper.stdinPayload !== "") {
+                helper.write(helper.stdinPayload + "\n")
+                helper.stdinPayload = ""
+            }
+            helper.stdinEnabled = false
+        }
 
         stdout: SplitParser {
             splitMarker: ""
@@ -207,22 +285,50 @@ Panel {
             var failure = helper.stderrBuffer
             helper.stdoutBuffer = ""
             helper.stderrBuffer = ""
+            helper.stdinPayload = ""
+            helper.stdinEnabled = false
             root.busy = false
             root.pendingAction = ""
+            if (root.queuedFileVerb !== "") Qt.callLater(function() { root.startQueuedFileOp() })
 
             if (helper.timedOut) {
                 helper.timedOut = false
-                root.errorText = "Odaysy did not answer in time. Try again."
+                if (action === "export" || action === "restore") {
+                    root.reportFileOp("The file operation took too long.")
+                    if (action === "export") backupMenu.opened = true
+                } else {
+                    root.errorText = "Odaysy did not answer in time. Try again."
+                }
                 return
             }
             if (code !== 0) {
-                root.errorText = Model.plain(
+                var message = Model.plain(
                     failure.trim() || "The event store could not be read.", 300)
+                if (action === "export" || action === "restore") {
+                    root.reportFileOp(message)
+                    if (action === "export") backupMenu.opened = true
+                } else {
+                    root.errorText = message
+                }
                 return
             }
 
             var parsed = null
             try { parsed = JSON.parse(output.trim()) } catch (error) { parsed = null }
+            if (action === "export" || action === "restore") {
+                if (!parsed || parsed.ok !== true || !Array.isArray(parsed.events)) {
+                    root.reportFileOp("The file operation returned something this panel does not understand.")
+                    if (action === "export") backupMenu.opened = true
+                    return
+                }
+                root.store = parsed
+                root.storeReady = true
+                root.errorText = ""
+                root.reportFileOp(parsed.message || (action === "export"
+                    ? "Backed up." : "Restored."))
+                if (action === "export") backupMenu.opened = true
+                return
+            }
             if (!parsed || !Array.isArray(parsed.events)) {
                 root.errorText = "The event store returned something this panel does not understand."
                 return
@@ -262,6 +368,13 @@ Panel {
         onTriggered: if (helper.running) helper.signal(9)
     }
 
+    Timer {
+        id: fileNoticeClear
+        interval: 5000
+        repeat: false
+        onTriggered: root.fileNotice = ""
+    }
+
     // The calendar, not elapsed runtime: a suspend or a clock correction has to
     // move a counter the same way midnight does.
     SystemClock {
@@ -272,6 +385,8 @@ Panel {
 
     onOpenedChanged: {
         if (root.opened) {
+            backupMenu.opened = false
+            root.clearFileNotice()
             root.cancelEdit()
             root.reload()
             return
@@ -297,7 +412,30 @@ Panel {
         horizontalMargin: 8.75
         hasVisualContent: true
         onPressed: function(mouseButton) {
-            if (mouseButton === Qt.LeftButton) root.toggle()
+            if (mouseButton === Qt.RightButton) {
+                if (root.opened) root.close()
+                backupMenu.opened = !backupMenu.opened
+                return
+            }
+            backupMenu.opened = false
+            root.toggle()
+        }
+    }
+
+    // ---- backup, restore and location --------------------------------------
+    BackupMenu {
+        id: backupMenu
+        anchorItem: button
+        bar: root.bar
+        canUseFiles: !root.busy
+        stateDir: root.configDir
+        resultNotice: root.fileNotice
+        onExportRequested: function(path) {
+            root.clearFileNotice()
+            root.runFileOp("export", path)
+        }
+        onRestoreRequested: function(path) {
+            root.requestRestore(path)
         }
     }
 
@@ -377,6 +515,17 @@ Panel {
                         text: root.errorText
                         textFormat: Text.PlainText
                         color: Color.urgent
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.bodySmall
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Text {
+                        width: parent.width
+                        visible: root.fileNotice !== ""
+                        text: root.fileNotice
+                        textFormat: Text.PlainText
+                        color: Util.alpha(Color.foreground, 0.8)
                         font.family: Style.font.family
                         font.pixelSize: Style.font.bodySmall
                         wrapMode: Text.WordWrap
