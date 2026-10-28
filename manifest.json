@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "h1st0ry3d.odaysy",
+  "name": "Odaysy",
+  "version": "1.0.0",
+  "author": "h1st0ry3d",
+  "license": "MIT",
+  "description": "Track days since several events, with one counter pinned to the bar. Reads and writes ~/.config/odaysy/config.json.",
+  "kinds": [
+    "bar-widget",
+    "panel"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml",
+    "panel": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Odaysy",
+    "description": "Days since the things you are counting, with one number in the bar.",
+    "category": "Time",
+    "aliases": [
+      "days",
+      "days-since",
+      "counters"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
